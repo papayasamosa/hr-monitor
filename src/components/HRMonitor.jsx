@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ConnectionButton from './ConnectionButton';
 import HRDisplay from './HRDisplay';
+import RecordingPanel from './RecordingPanel';
+import SessionTypeSelector from './SessionTypeSelector';
 import Stats from './Stats';
 import HRVAnalysis from './HRVAnalysis';
 import {
@@ -14,12 +16,14 @@ import {
 } from '../utils/bluetooth';
 import debugRecorder from '../utils/debugBluetooth';
 import { analyzeHRV } from '../utils/hrvCalculations';
+import { buildCSV, buildRecordingFilename, downloadCSV } from '../utils/csvExport';
+
+const EMPTY_RECORDING_STATS = { average: 0, min: 0, max: 0, count: 0 };
 
 function HRMonitor() {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [currentHR, setCurrentHR] = useState(0);
-  const [heartRateReadings, setHeartRateReadings] = useState([]);
   const [deviceName, setDeviceName] = useState('');
   const [batteryLevel, setBatteryLevel] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState({});
@@ -28,6 +32,20 @@ function HRMonitor() {
   const [server, setServer] = useState(null);
   const [characteristic, setCharacteristic] = useState(null);
   const isPlaybackMode = useRef(false);
+
+  // Session type ('strength' | 'cardio') must be chosen before recording starts.
+  // It persists across recordings for convenience; only locked while actively recording.
+  const [sessionType, setSessionType] = useState(null);
+
+  // Recording state - drives the Start Recording / Stop & Download CSV workflow.
+  // The debugRecorder singleton is reused as the underlying storage engine.
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
+  const [recordingStats, setRecordingStats] = useState(EMPTY_RECORDING_STATS);
+  const isRecordingRef = useRef(false);
+  const recordingStartTimeRef = useRef(null);
+  // Running totals so per-reading stats update in O(1) without storing every reading twice.
+  const recordingStatsAccumulatorRef = useRef({ sum: 0, count: 0, min: Infinity, max: -Infinity });
 
   // HRV test state
   const [isHRVTesting, setIsHRVTesting] = useState(false);
@@ -38,24 +56,36 @@ function HRMonitor() {
 
   const HRV_TEST_DURATION = 120000; // 2 minutes in milliseconds
 
-  // Calculate statistics
-  const stats = React.useMemo(() => {
-    if (heartRateReadings.length === 0) {
-      return { average: 0, max: 0, min: 0 };
+  // Single entry point for every incoming heart-rate reading, whether from a live
+  // device or debug playback. Fans the reading out to the debug recorder (the CSV
+  // storage engine), the live BPM display, the active recording's running stats,
+  // and HRV collection.
+  const processReading = useCallback((data) => {
+    debugRecorder.recordReading(data);
+    setCurrentHR(data.heartRate);
+
+    if (isRecordingRef.current) {
+      const acc = recordingStatsAccumulatorRef.current;
+      acc.sum += data.heartRate;
+      acc.count += 1;
+      acc.min = Math.min(acc.min, data.heartRate);
+      acc.max = Math.max(acc.max, data.heartRate);
+      setRecordingStats({
+        average: Math.round(acc.sum / acc.count),
+        min: acc.min,
+        max: acc.max,
+        count: acc.count
+      });
     }
 
-    const validReadings = heartRateReadings.filter(hr => hr > 0);
-    if (validReadings.length === 0) {
-      return { average: 0, max: 0, min: 0 };
+    if (data.rrIntervals && data.rrIntervals.length > 0) {
+      setHRVReadings(prev => {
+        const newReadings = [...prev, data];
+        hrvReadingsRef.current = newReadings; // Keep ref in sync
+        return newReadings;
+      });
     }
-
-    const sum = validReadings.reduce((acc, hr) => acc + hr, 0);
-    const average = Math.round(sum / validReadings.length);
-    const max = Math.max(...validReadings);
-    const min = Math.min(...validReadings);
-
-    return { average, max, min };
-  }, [heartRateReadings]);
+  }, []);
 
   // Register playback callbacks with debug system
   useEffect(() => {
@@ -67,24 +97,10 @@ function HRMonitor() {
         setDeviceName(sessionData.deviceName + ' (Playback)');
         setIsConnected(true);
         setCurrentHR(0);
-        setHeartRateReadings([]);
         setHRVReadings([]);
         setError('');
       },
-      onReading: (data) => {
-        // Playback reading callback
-        setCurrentHR(data.heartRate);
-        setHeartRateReadings(prev => [...prev, data.heartRate]);
-
-        // Collect RR intervals for HRV testing (if test is running and RR data available)
-        if (data.rrIntervals && data.rrIntervals.length > 0) {
-          setHRVReadings(prev => {
-            const newReadings = [...prev, data];
-            hrvReadingsRef.current = newReadings; // Keep ref in sync
-            return newReadings;
-          });
-        }
-      },
+      onReading: processReading,
       onComplete: () => {
         // Playback end callback
         console.log('📊 Playback completed');
@@ -102,7 +118,7 @@ function HRMonitor() {
     return () => {
       debugRecorder.unregisterUICallbacks();
     };
-  }, []);
+  }, [processReading]);
 
   // Handle disconnection events
   useEffect(() => {
@@ -140,6 +156,34 @@ function HRMonitor() {
     return () => clearInterval(interval);
   }, [server, isConnected]);
 
+  // Tick the elapsed recording timer once per second while recording is active
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const tick = () => {
+      if (recordingStartTimeRef.current) {
+        setRecordingElapsedMs(Date.now() - recordingStartTimeRef.current.getTime());
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [isRecording]);
+
+  // Warn before an accidental tab close/refresh while a recording is in progress
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isRecording]);
+
   const handleConnect = async () => {
     setIsConnecting(true);
     setError('');
@@ -166,22 +210,7 @@ function HRMonitor() {
       setSensorLocation(location);
 
       // Start receiving heart rate data
-      const char = await startHeartRateNotifications(gattServer, (data) => {
-        // Record data for debugging (only if recording is active)
-        debugRecorder.recordReading(data);
-
-        setCurrentHR(data.heartRate);
-        setHeartRateReadings(prev => [...prev, data.heartRate]);
-
-        // Collect RR intervals for HRV testing (if test is running and RR data available)
-        if (data.rrIntervals && data.rrIntervals.length > 0) {
-          setHRVReadings(prev => {
-            const newReadings = [...prev, data];
-            hrvReadingsRef.current = newReadings; // Keep ref in sync
-            return newReadings;
-          });
-        }
-      });
+      const char = await startHeartRateNotifications(gattServer, processReading);
 
       setCharacteristic(char);
       setIsConnected(true);
@@ -195,8 +224,11 @@ function HRMonitor() {
 
   const handleDisconnect = async () => {
     try {
-      // Stop debug recording if active
-      if (debugRecorder.getStatus().isRecording) {
+      if (isRecordingRef.current) {
+        // Preserve whatever was captured rather than silently discarding it
+        finishRecording({ download: true });
+      } else if (debugRecorder.getStatus().isRecording) {
+        // A recording was started via the console debug API, not our UI - just stop it
         debugRecorder.stopRecording();
       }
 
@@ -222,12 +254,43 @@ function HRMonitor() {
       setSensorLocation(null);
       setServer(null);
       setCharacteristic(null);
+      setRecordingElapsedMs(0);
+      setRecordingStats(EMPTY_RECORDING_STATS);
 
       // Clear connected device from debug recorder
       debugRecorder.setConnectedDevice('');
     } catch (err) {
       setError('Error disconnecting: ' + err.message);
     }
+  };
+
+  // Recording Handlers
+  const handleStartRecording = () => {
+    if (!sessionType) return;
+
+    recordingStartTimeRef.current = new Date();
+    recordingStatsAccumulatorRef.current = { sum: 0, count: 0, min: Infinity, max: -Infinity };
+    isRecordingRef.current = true;
+    setIsRecording(true);
+    setRecordingElapsedMs(0);
+    setRecordingStats(EMPTY_RECORDING_STATS);
+    debugRecorder.startRecording(deviceName, sessionType);
+  };
+
+  const finishRecording = ({ download }) => {
+    isRecordingRef.current = false;
+    setIsRecording(false);
+    const sessionData = debugRecorder.stopRecording();
+
+    if (download && sessionData && sessionData.readings.length > 0 && recordingStartTimeRef.current) {
+      const csv = buildCSV(sessionData.readings, recordingStartTimeRef.current, sessionData.sessionType);
+      const filename = buildRecordingFilename(recordingStartTimeRef.current, sessionData.sessionType);
+      downloadCSV(csv, filename);
+    }
+  };
+
+  const handleStopRecording = () => {
+    finishRecording({ download: true });
   };
 
   // HRV Test Handlers
@@ -277,7 +340,7 @@ function HRMonitor() {
   return (
     <div className="hr-monitor">
       <header className="header">
-        <h1>Web HR Monitor</h1>
+        <h1>Heart Rate Monitor</h1>
       </header>
 
       <main className="main-content">
@@ -301,14 +364,35 @@ function HRMonitor() {
         {isConnected && (
           <>
             <HRDisplay currentHR={currentHR} />
-            <Stats stats={stats} readingsCount={heartRateReadings.length} />
-            <HRVAnalysis
-              isConnected={isConnected}
-              testState={hrvTestState}
-              results={hrvResults}
-              onStartTest={handleStartHRVTest}
-              onStopTest={handleStopHRVTest}
+
+            <SessionTypeSelector
+              sessionType={sessionType}
+              onChange={setSessionType}
+              disabled={isRecording}
             />
+
+            <RecordingPanel
+              isRecording={isRecording}
+              elapsedMs={recordingElapsedMs}
+              startDisabled={!sessionType}
+              onStart={handleStartRecording}
+              onStop={handleStopRecording}
+            />
+
+            {isRecording && (
+              <Stats stats={recordingStats} readingsCount={recordingStats.count} />
+            )}
+
+            <details className="hrv-details">
+              <summary className="hrv-summary">HRV Analysis (optional)</summary>
+              <HRVAnalysis
+                isConnected={isConnected}
+                testState={hrvTestState}
+                results={hrvResults}
+                onStartTest={handleStartHRVTest}
+                onStopTest={handleStopHRVTest}
+              />
+            </details>
           </>
         )}
 

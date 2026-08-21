@@ -43,8 +43,6 @@ function HRVAnalysis({
 
   return (
     <div className="hrv-section">
-      <h2>HRV Analysis</h2>
-
       {/* Idle State - Ready to start test */}
       {!testState.isRunning && !results && (
         <div className="hrv-idle">

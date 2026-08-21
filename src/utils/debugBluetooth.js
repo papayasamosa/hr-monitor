@@ -12,6 +12,7 @@ class HRDebugRecorder {
     this.playbackIndex = 0;
     this.startTime = null;
     this.deviceName = '';
+    this.sessionType = null; // 'strength' | 'cardio' | null
     this.connectedDeviceName = ''; // Store currently connected device name
     this.playbackCallback = null;
     this.playbackDisconnectCallback = null;
@@ -46,8 +47,9 @@ class HRDebugRecorder {
   /**
    * Start recording heart rate data
    * @param {string} deviceName - Name of the connected device (optional, uses connected device if omitted)
+   * @param {string|null} sessionType - Session-level metadata, e.g. 'strength' or 'cardio'
    */
-  startRecording(deviceName) {
+  startRecording(deviceName, sessionType = null) {
     // Use provided name, or fall back to connected device name, or 'Unknown Device'
     const recordingDeviceName = deviceName || this.connectedDeviceName || 'Unknown Device';
 
@@ -55,7 +57,8 @@ class HRDebugRecorder {
     this.recordings = [];
     this.startTime = Date.now();
     this.deviceName = recordingDeviceName;
-    console.log('📹 Recording started for device:', recordingDeviceName);
+    this.sessionType = sessionType;
+    console.log('📹 Recording started for device:', recordingDeviceName, sessionType ? `(${sessionType})` : '');
   }
 
   /**
@@ -92,6 +95,7 @@ class HRDebugRecorder {
     const sessionData = {
       version: '1.0',
       deviceName: this.deviceName,
+      sessionType: this.sessionType,
       recordedAt: new Date().toISOString(),
       duration,
       readingsCount: this.recordings.length,
@@ -119,6 +123,7 @@ class HRDebugRecorder {
     const data = sessionData || {
       version: '1.0',
       deviceName: this.deviceName,
+      sessionType: this.sessionType,
       recordedAt: new Date().toISOString(),
       duration: this.recordings.at(-1)?.timestamp || 0,
       readingsCount: this.recordings.length,
@@ -279,7 +284,7 @@ const debugRecorder = new HRDebugRecorder();
 if (typeof window !== 'undefined') {
   window.hrDebug = {
     // Recording API
-    startRecording: (deviceName) => debugRecorder.startRecording(deviceName),
+    startRecording: (deviceName, sessionType) => debugRecorder.startRecording(deviceName, sessionType),
     stopRecording: () => debugRecorder.stopRecording(),
     downloadRecording: () => debugRecorder.downloadRecording(),
     
