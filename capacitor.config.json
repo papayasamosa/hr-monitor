@@ -1,0 +1,5 @@
+{
+  "appId": "com.papayasamosa.hrmonitor",
+  "appName": "Heart Rate Monitor",
+  "webDir": "dist"
+}

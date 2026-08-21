@@ -20,7 +20,7 @@ function RecordingPanel({ isRecording, elapsedMs, startDisabled, onStart, onStop
 
       {isRecording ? (
         <button className="btn-danger recording-stop-btn" onClick={onStop}>
-          Stop & Download CSV
+          Stop Recording
         </button>
       ) : (
         <>
