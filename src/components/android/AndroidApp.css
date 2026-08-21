@@ -1,0 +1,376 @@
+/* ==========================================
+   Android App Shell
+   Deliberately different from the web layout (see App.css): full-width,
+   no centered card/max-width, no desktop-style panels - this fills the
+   actual phone screen. Reuses the design tokens defined in App.css's
+   :root (colors, spacing, radii, font sizes).
+   ========================================== */
+
+.android-app {
+  width: 100%;
+  min-height: 100vh;
+  background: var(--bg-primary);
+}
+
+.android-home {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.android-header {
+  position: relative;
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-sm);
+  text-align: center;
+}
+
+.android-header h1 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.android-header-with-back {
+  text-align: center;
+}
+
+.android-main {
+  flex: 1;
+  padding: 0 var(--spacing-lg) var(--spacing-xl);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==========================================
+   Device Status Row (tappable -> Device Settings)
+   ========================================== */
+
+.android-device-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  min-height: 52px;
+  cursor: pointer;
+  margin-bottom: var(--spacing-lg);
+}
+
+.android-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-tertiary);
+}
+
+.android-status-dot.status-connected {
+  background: var(--accent-success);
+  box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.15);
+}
+
+.android-status-dot.status-connecting {
+  background: #f59e0b;
+  animation: android-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes android-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.android-status-dot.status-not_connected,
+.android-status-dot.status-no_device {
+  background: var(--text-tertiary);
+}
+
+.android-device-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.android-status-label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.android-device-name {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.android-battery {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.android-chevron {
+  font-size: var(--text-xl);
+  color: var(--text-tertiary);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* ==========================================
+   BPM Display - the main visual focus
+   ========================================== */
+
+.android-bpm-display {
+  text-align: center;
+  margin: var(--spacing-md) 0;
+}
+
+.android-bpm-value {
+  font-size: 6rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.android-bpm-unit {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: var(--spacing-xs);
+}
+
+.android-recording-timer {
+  text-align: center;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-danger);
+  margin-bottom: var(--spacing-md);
+}
+
+/* ==========================================
+   Session Type Pills
+   ========================================== */
+
+.android-session-type {
+  margin-bottom: var(--spacing-md);
+}
+
+.android-session-type-label {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: center;
+  margin-bottom: var(--spacing-xs);
+}
+
+.android-session-type-pills {
+  display: flex;
+  gap: var(--spacing-xs);
+  justify-content: center;
+}
+
+.android-pill {
+  padding: var(--spacing-xs) var(--spacing-lg);
+  min-height: 40px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-medium);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.android-pill.selected {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: white;
+}
+
+/* ==========================================
+   Compact Stats Row
+   ========================================== */
+
+.android-stats-row {
+  display: flex;
+  justify-content: space-around;
+  padding: var(--spacing-sm) 0;
+  margin-bottom: var(--spacing-sm);
+  border-top: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.android-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.android-stat-value {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.android-stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.android-reading-count {
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-md);
+}
+
+/* ==========================================
+   Buttons
+   ========================================== */
+
+.android-primary-btn {
+  width: 100%;
+  min-height: 52px;
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: white;
+  background: var(--accent-primary);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  margin-bottom: var(--spacing-sm);
+}
+
+.android-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.android-primary-btn.android-stop-btn {
+  background: var(--accent-danger);
+}
+
+.android-hint {
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-md);
+}
+
+.android-secondary-link {
+  width: 100%;
+  min-height: 44px;
+  background: none;
+  border: none;
+  color: var(--accent-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: var(--spacing-sm);
+}
+
+.android-device-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-lg);
+}
+
+.android-hrv-details {
+  margin-top: var(--spacing-lg);
+}
+
+/* ==========================================
+   History (Android)
+   ========================================== */
+
+.android-history-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.android-history-card {
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.android-history-card-heading {
+  display: flex;
+  gap: var(--spacing-xs);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.android-history-card-time {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.android-history-card-duration {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.android-history-card-stats {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+/* ==========================================
+   Session Detail (Android)
+   ========================================== */
+
+.android-session-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  text-align: center;
+  margin-bottom: 2px;
+}
+
+.android-session-timerange {
+  text-align: center;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.android-session-duration {
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-md);
+}
+
+.android-stats-row-detail {
+  margin-top: var(--spacing-sm);
+}

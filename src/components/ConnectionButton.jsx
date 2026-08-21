@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-function ConnectionButton({ isConnected, isConnecting, deviceName, batteryLevel, deviceInfo, sensorLocation, onConnect, onDisconnect }) {
+function ConnectionButton({ isConnected, isConnecting, deviceName, batteryLevel, deviceInfo, sensorLocation, onConnect, onDisconnect, connectDisabled }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const hasExtendedInfo = deviceInfo && (
@@ -19,7 +19,7 @@ function ConnectionButton({ isConnected, isConnecting, deviceName, batteryLevel,
         <button
           className="btn-primary"
           onClick={onConnect}
-          disabled={isConnecting}
+          disabled={isConnecting || connectDisabled}
           style={{ width: '100%' }}
         >
           {isConnecting ? 'Connecting...' : 'Connect to HR Monitor'}
