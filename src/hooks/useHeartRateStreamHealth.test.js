@@ -190,6 +190,29 @@ describe('useHeartRateStreamHealth', () => {
     expect(bluetooth.stopNotifications).toHaveBeenCalled();
   });
 
+  it('treats a heartRate:0 "no contact" reading the same as silence - not forwarded, watchdog keeps running', async () => {
+    const onReading = vi.fn();
+    const { result } = renderHook(() => useHeartRateStreamHealth({ onReading }));
+
+    act(() => result.current.startMonitoring(connection()));
+    act(() => result.current.handleReading({ heartRate: 65 }));
+    expect(result.current.streamState).toBe('streaming');
+    onReading.mockClear();
+
+    // The strap keeps sending notifications on schedule, just with heartRate: 0
+    // (observed on real hardware when the strap loses skin contact).
+    act(() => result.current.handleReading({ heartRate: 0 }));
+    expect(onReading).not.toHaveBeenCalled();
+
+    // Because the 0-readings never reset the watchdog, staleness still fires
+    // and recovery still begins - a real monitor "streaming" nothing but
+    // zeros must not be mistaken for a healthy stream.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STREAMING_STALE_TIMEOUT_MS);
+    });
+    expect(result.current.streamState).toBe('recovering');
+  });
+
   it('an active recording is untouched by recovery: handleReading keeps delivering to onReading through a resubscribe', async () => {
     const received = [];
     const onReading = vi.fn((data) => received.push(data.heartRate));

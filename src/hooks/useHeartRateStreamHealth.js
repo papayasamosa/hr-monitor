@@ -61,6 +61,15 @@ export function useHeartRateStreamHealth({ onReading, onReconnectNeeded }) {
   }, []);
 
   const handleReading = useCallback((data) => {
+    // Some monitors report a 0 BPM "no contact" reading instead of simply
+    // falling silent when taken off-skin (observed on real hardware: the
+    // notification keeps arriving on schedule, just carrying heartRate: 0).
+    // Treat that the same as no data at all - don't reset the watchdog,
+    // don't mark the stream as healthy, and don't forward a bogus 0 into
+    // the recording/chart pipeline.
+    const hasSignal = typeof data?.heartRate === 'number' && data.heartRate > 0;
+    if (!hasSignal) return;
+
     const now = Date.now();
     lastHeartRateReceivedAtRef.current = now;
     setLastHeartRateReceivedAt(now);
