@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import storage from '../../services/storage';
+import CsvImportDialog from '../CsvImportDialog';
 
 function formatDuration(ms) {
   if (!ms) return '0 min';
@@ -29,6 +30,7 @@ function AndroidHistoryView({ onBack, onOpenSession }) {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showImport, setShowImport] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,6 +55,10 @@ function AndroidHistoryView({ onBack, onOpenSession }) {
       </header>
 
       <main className="android-main">
+        <button className="btn-secondary history-import-btn" onClick={() => setShowImport(true)}>
+          Import CSV
+        </button>
+
         {error && <div className="error-message">{error}</div>}
         {loading && <p className="info-message">Loading history...</p>}
         {!loading && sessions.length === 0 && (
@@ -80,6 +86,10 @@ function AndroidHistoryView({ onBack, onOpenSession }) {
           ))}
         </ul>
       </main>
+
+      {showImport && (
+        <CsvImportDialog onCancel={() => setShowImport(false)} onImported={() => load()} />
+      )}
     </div>
   );
 }

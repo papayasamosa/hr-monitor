@@ -126,6 +126,14 @@
   flex-shrink: 0;
 }
 
+.android-stream-status {
+  text-align: center;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent-warning, #b45309);
+  margin-top: var(--spacing-xs);
+}
+
 /* ==========================================
    BPM Display - the main visual focus
    ========================================== */

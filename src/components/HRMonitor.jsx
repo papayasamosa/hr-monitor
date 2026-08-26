@@ -3,14 +3,23 @@ import ConnectionButton from './ConnectionButton';
 import HRDisplay from './HRDisplay';
 import RecordingPanel from './RecordingPanel';
 import SessionTypeSelector from './SessionTypeSelector';
+import TreadmillSpeedControl from './TreadmillSpeedControl';
 import Stats from './Stats';
 import HRVAnalysis from './HRVAnalysis';
 import bluetooth from '../services/bluetooth';
 import { isNativePlatform } from '../services/platform';
 import debugRecorder from '../utils/debugBluetooth';
 import { useRecordingSession } from '../hooks/useRecordingSession';
+import { useHeartRateStreamHealth } from '../hooks/useHeartRateStreamHealth';
+import { useAppForegroundResume } from '../hooks/useAppForegroundResume';
 
-function HRMonitor({ onOpenHistory }) {
+const STREAM_STATUS_LABEL = {
+  'waiting-for-data': 'Waiting for signal…',
+  recovering: 'Reconnecting…',
+  failed: 'Lost signal'
+};
+
+function HRMonitor({ onOpenHistory, onOpenDashboard }) {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [deviceName, setDeviceName] = useState('');
@@ -21,10 +30,12 @@ function HRMonitor({ onOpenHistory }) {
   const connectionRef = useRef(null);
   const unsubscribeDisconnectRef = useRef(null);
   const isPlaybackMode = useRef(false);
+  const fullReconnectInProgressRef = useRef(false);
 
   const session = useRecordingSession();
 
   const handleUnexpectedDisconnect = useCallback(() => {
+    stream.stopMonitoring();
     session.abortRecording('interrupted');
     connectionRef.current = null;
     setIsConnected(false);
@@ -33,6 +44,43 @@ function HRMonitor({ onOpenHistory }) {
     setError('Device disconnected');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Web Bluetooth can't silently reconnect without a user gesture, so a
+  // full reconnect here can only clean up and ask the user to reconnect -
+  // resubscribing on the existing connection (no user gesture needed) is
+  // tried first and covers the common "still paired, notifications just
+  // stopped" case.
+  const handleReconnectNeeded = useCallback(async () => {
+    if (fullReconnectInProgressRef.current || isPlaybackMode.current) return;
+    fullReconnectInProgressRef.current = true;
+    try {
+      if (unsubscribeDisconnectRef.current) {
+        unsubscribeDisconnectRef.current();
+        unsubscribeDisconnectRef.current = null;
+      }
+      if (connectionRef.current) {
+        try {
+          await bluetooth.disconnect(connectionRef.current);
+        } catch {
+          // Best-effort - the link may already be down.
+        }
+      }
+      connectionRef.current = null;
+      setIsConnected(false);
+      setError('Lost the heart rate signal - reconnect to continue');
+    } finally {
+      fullReconnectInProgressRef.current = false;
+    }
+  }, []);
+
+  const stream = useHeartRateStreamHealth({
+    onReading: session.processReading,
+    onReconnectNeeded: handleReconnectNeeded
+  });
+
+  useAppForegroundResume(() => {
+    if (isConnected && !isPlaybackMode.current) stream.checkHealthOnResume();
+  });
 
   // Register playback callbacks with debug system
   useEffect(() => {
@@ -100,8 +148,9 @@ function HRMonitor({ onOpenHistory }) {
       const location = await bluetooth.readBodySensorLocation(connection);
       setSensorLocation(location);
 
-      const activeConnection = await bluetooth.startNotifications(connection, session.processReading);
+      const activeConnection = await bluetooth.startNotifications(connection, stream.handleReading);
       connectionRef.current = activeConnection;
+      stream.startMonitoring(activeConnection);
 
       unsubscribeDisconnectRef.current = bluetooth.onUnexpectedDisconnect(
         activeConnection,
@@ -119,6 +168,7 @@ function HRMonitor({ onOpenHistory }) {
 
   const handleDisconnect = async () => {
     try {
+      stream.stopMonitoring();
       if (unsubscribeDisconnectRef.current) {
         unsubscribeDisconnectRef.current();
         unsubscribeDisconnectRef.current = null;
@@ -193,6 +243,9 @@ function HRMonitor({ onOpenHistory }) {
 
         {isConnected && (
           <>
+            {STREAM_STATUS_LABEL[stream.streamState] && (
+              <div className="stream-status-message">{STREAM_STATUS_LABEL[stream.streamState]}</div>
+            )}
             <HRDisplay currentHR={session.currentHR} />
 
             <SessionTypeSelector
@@ -200,6 +253,15 @@ function HRMonitor({ onOpenHistory }) {
               onChange={session.setSessionType}
               disabled={session.isRecording}
             />
+
+            {session.sessionType === 'cardio' && (
+              <TreadmillSpeedControl
+                value={session.treadmillSpeedValue}
+                unit={session.treadmillSpeedUnit}
+                onValueChange={session.setTreadmillSpeed}
+                onUnitChange={session.setTreadmillSpeedUnit}
+              />
+            )}
 
             <RecordingPanel
               isRecording={session.isRecording}
@@ -236,6 +298,9 @@ function HRMonitor({ onOpenHistory }) {
 
         <button className="btn-secondary history-link-btn" onClick={onOpenHistory}>
           View History
+        </button>
+        <button className="btn-secondary history-link-btn" onClick={onOpenDashboard}>
+          Dashboard
         </button>
       </main>
 

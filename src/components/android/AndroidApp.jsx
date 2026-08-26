@@ -3,6 +3,7 @@ import AndroidHome from './AndroidHome';
 import AndroidDeviceSettings from './AndroidDeviceSettings';
 import AndroidHistoryView from './AndroidHistoryView';
 import AndroidSessionDetail from './AndroidSessionDetail';
+import Dashboard from '../Dashboard';
 import { useRecordingSession } from '../../hooks/useRecordingSession';
 import { useAndroidConnection } from '../../hooks/useAndroidConnection';
 
@@ -14,7 +15,7 @@ import { useAndroidConnection } from '../../hooks/useAndroidConnection';
  * Device Settings and back rather than being torn down/recreated.
  */
 function AndroidApp() {
-  const [view, setView] = useState('home'); // 'home' | 'device' | 'history' | 'detail'
+  const [view, setView] = useState('home'); // 'home' | 'device' | 'history' | 'detail' | 'dashboard'
   const [selectedSessionId, setSelectedSessionId] = useState(null);
 
   const session = useRecordingSession();
@@ -31,6 +32,7 @@ function AndroidApp() {
 
   const openDeviceSettings = () => setView('device');
   const openHistory = () => setView('history');
+  const openDashboard = () => setView('dashboard');
   const openSession = (sessionId) => {
     setSelectedSessionId(sessionId);
     setView('detail');
@@ -46,11 +48,13 @@ function AndroidApp() {
           connection={connection}
           onOpenHistory={openHistory}
           onOpenDeviceSettings={openDeviceSettings}
+          onOpenDashboard={openDashboard}
         />
       )}
       {view === 'device' && <AndroidDeviceSettings connection={connection} onBack={backToHome} />}
       {view === 'history' && <AndroidHistoryView onBack={backToHome} onOpenSession={openSession} />}
       {view === 'detail' && <AndroidSessionDetail sessionId={selectedSessionId} onBack={backToHistory} />}
+      {view === 'dashboard' && <Dashboard onBack={backToHome} />}
     </div>
   );
 }

@@ -1,10 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import storage from '../services/storage';
 import { exportSessionCSV } from '../services/session/exportSession';
 import { filterReadingsByEffectiveEnd } from '../services/session/sessionModel';
+import { calculateHeartRateStats } from '../services/session/heartRateStats';
 import { setEffectiveEndTime, restoreEffectiveEndTime } from '../services/session/trimSession';
+import { fromCanonicalKmh } from '../services/session/speedUnits';
+import { getPreferredSpeedUnit } from '../services/session/speedUnitPreference';
 import HeartRateChart from './HeartRateChart';
 import EditEndTimeDialog from './EditEndTimeDialog';
+import SpeedEventsEditor from './SpeedEventsEditor';
 
 function formatDateTime(iso) {
   return iso ? new Date(iso).toLocaleString() : '—';
@@ -22,6 +26,8 @@ function formatDuration(ms) {
 function SessionDetailView({ sessionId, onBack }) {
   const [session, setSession] = useState(null);
   const [readings, setReadings] = useState([]);
+  const [speedEvents, setSpeedEvents] = useState([]);
+  const [showSpeed, setShowSpeed] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -31,9 +37,14 @@ function SessionDetailView({ sessionId, onBack }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, r] = await Promise.all([storage.getSession(sessionId), storage.getReadings(sessionId)]);
+      const [s, r, sp] = await Promise.all([
+        storage.getSession(sessionId),
+        storage.getReadings(sessionId),
+        storage.getSpeedEventsForSession(sessionId)
+      ]);
       setSession(s);
       setReadings(r);
+      setSpeedEvents(sp);
     } catch (err) {
       setError('Failed to load session: ' + err.message);
     } finally {
@@ -81,6 +92,17 @@ function SessionDetailView({ sessionId, onBack }) {
 
   const isTrimmed = session && session.effectiveEndedAt && session.effectiveEndedAt !== session.endedAt;
   const includedReadings = session ? filterReadingsByEffectiveEnd(readings, session) : readings;
+  const stats = calculateHeartRateStats(includedReadings);
+  const speedUnit = getPreferredSpeedUnit();
+
+  const chartSpeedEvents = useMemo(() => {
+    if (!session || speedEvents.length === 0) return [];
+    const startMs = new Date(session.startedAt).getTime();
+    return speedEvents.map((event) => ({
+      elapsedMs: new Date(event.recordedAt).getTime() - startMs,
+      speed: fromCanonicalKmh(event.speedCanonical, speedUnit)
+    }));
+  }, [session, speedEvents, speedUnit]);
 
   return (
     <div className="hr-monitor">
@@ -137,18 +159,28 @@ function SessionDetailView({ sessionId, onBack }) {
 
             <div className="stats-grid session-detail-stats">
               <div className="stat-card">
+                <div className="stat-label">Lowest</div>
+                <div className="stat-value">{stats ? stats.min : '—'}</div>
+                <div className="stat-unit">BPM</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Typical low</div>
+                <div className="stat-value">{stats ? Math.round(stats.p025) : '—'}</div>
+                <div className="stat-unit">BPM</div>
+              </div>
+              <div className="stat-card">
                 <div className="stat-label">Average</div>
-                <div className="stat-value">{session.averageHeartRate}</div>
+                <div className="stat-value">{stats ? Math.round(stats.average) : '—'}</div>
                 <div className="stat-unit">BPM</div>
               </div>
               <div className="stat-card">
-                <div className="stat-label">Maximum</div>
-                <div className="stat-value">{session.maximumHeartRate}</div>
+                <div className="stat-label">Typical high</div>
+                <div className="stat-value">{stats ? Math.round(stats.p975) : '—'}</div>
                 <div className="stat-unit">BPM</div>
               </div>
               <div className="stat-card">
-                <div className="stat-label">Minimum</div>
-                <div className="stat-value">{session.minimumHeartRate}</div>
+                <div className="stat-label">Highest</div>
+                <div className="stat-value">{stats ? stats.max : '—'}</div>
                 <div className="stat-unit">BPM</div>
               </div>
               <div className="stat-card">
@@ -158,7 +190,31 @@ function SessionDetailView({ sessionId, onBack }) {
               </div>
             </div>
 
-            <HeartRateChart readings={includedReadings} />
+            {chartSpeedEvents.length > 0 && (
+              <label className="speed-toggle">
+                <input type="checkbox" checked={showSpeed} onChange={(e) => setShowSpeed(e.target.checked)} />
+                Show treadmill speed on chart
+              </label>
+            )}
+
+            <HeartRateChart
+              readings={includedReadings}
+              averageBpm={stats?.average}
+              typicalLowBpm={stats?.p025}
+              typicalHighBpm={stats?.p975}
+              speedEvents={chartSpeedEvents}
+              speedUnit={speedUnit}
+              showSpeed={showSpeed}
+            />
+
+            {session.sessionType === 'cardio' && (
+              <SpeedEventsEditor
+                sessionId={sessionId}
+                session={session}
+                speedEvents={speedEvents}
+                onChange={load}
+              />
+            )}
 
             <div className="session-detail-actions">
               <button className="btn-secondary" onClick={() => setEditingEndTime(true)}>

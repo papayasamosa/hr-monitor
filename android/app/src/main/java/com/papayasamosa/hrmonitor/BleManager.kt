@@ -213,6 +213,15 @@ object BleManager {
     }
 
     private fun handleReading(reading: HrReading) {
+        // Some monitors report a 0 BPM "no contact" reading instead of simply
+        // falling silent when taken off-skin (observed on real hardware: the
+        // notification keeps arriving on schedule, just carrying heartRate 0,
+        // occasionally with a noisy non-zero spike right at the transition).
+        // Treat a non-positive reading as no signal at all: never forward it
+        // to the UI/JS layer and never let it pollute persisted session stats
+        // or the recorded readings.
+        if (reading.heartRate <= 0) return
+
         handler.post { onReading?.invoke(reading) }
 
         val sessionId = activeSessionId ?: return

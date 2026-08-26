@@ -1,6 +1,7 @@
 import React from 'react';
 import HeartRateChart from '../HeartRateChart';
 import HRVAnalysis from '../HRVAnalysis';
+import TreadmillSpeedControl from '../TreadmillSpeedControl';
 
 const SESSION_TYPES = [
   { value: 'strength', label: 'Strength' },
@@ -14,6 +15,12 @@ const STATUS_LABEL = {
   no_device: 'No HR monitor configured'
 };
 
+const STREAM_STATUS_LABEL = {
+  'waiting-for-data': 'Waiting for signal…',
+  recovering: 'Reconnecting…',
+  failed: 'Lost signal'
+};
+
 function formatElapsed(ms) {
   const totalSeconds = Math.floor(ms / 1000);
   const h = Math.floor(totalSeconds / 3600);
@@ -23,7 +30,7 @@ function formatElapsed(ms) {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-function AndroidHome({ session, connection, onOpenHistory, onOpenDeviceSettings }) {
+function AndroidHome({ session, connection, onOpenHistory, onOpenDeviceSettings, onOpenDashboard }) {
   const handleStartRecording = async () => {
     try {
       await session.startRecording(connection.deviceName);
@@ -53,6 +60,10 @@ function AndroidHome({ session, connection, onOpenHistory, onOpenDeviceSettings 
 
         {connection.error && <div className="error-message">{connection.error}</div>}
 
+        {connection.isConnected && STREAM_STATUS_LABEL[connection.streamState] && (
+          <div className="android-stream-status">{STREAM_STATUS_LABEL[connection.streamState]}</div>
+        )}
+
         <div className="android-bpm-display">
           <div className="android-bpm-value">{session.currentHR || '--'}</div>
           <div className="android-bpm-unit">BPM</div>
@@ -78,6 +89,15 @@ function AndroidHome({ session, connection, onOpenHistory, onOpenDeviceSettings 
               ))}
             </div>
           </div>
+        )}
+
+        {session.sessionType === 'cardio' && (
+          <TreadmillSpeedControl
+            value={session.treadmillSpeedValue}
+            unit={session.treadmillSpeedUnit}
+            onValueChange={session.setTreadmillSpeed}
+            onUnitChange={session.setTreadmillSpeedUnit}
+          />
         )}
 
         {session.isRecording && (
@@ -123,6 +143,9 @@ function AndroidHome({ session, connection, onOpenHistory, onOpenDeviceSettings 
 
         <button className="android-secondary-link" onClick={onOpenHistory}>
           View History
+        </button>
+        <button className="android-secondary-link" onClick={onOpenDashboard}>
+          Dashboard
         </button>
 
         <details className="hrv-details android-hrv-details">

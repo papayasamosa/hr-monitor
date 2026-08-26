@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Web production build
+        run: npm run build
+
+      - name: Android/Capacitor web build + sync
+        run: npm run android:sync
+
+      # The Android app targets Java 21 (see android/app/build.gradle
+      # sourceCompatibility/targetCompatibility/jvmTarget) with Gradle 8.14.3
+      # (android/gradle/wrapper/gradle-wrapper.properties) and AGP 8.13.0
+      # against compileSdk/targetSdk 36 (android/variables.gradle).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Android Gradle assembleDebug
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon

@@ -20,7 +20,7 @@ import java.util.TimeZone
  */
 object HrDatabaseHelper {
     private const val DB_NAME = "hr_monitor.db"
-    private const val DB_VERSION = 2
+    private const val DB_VERSION = 3
 
     private lateinit var helper: OpenHelper
 
@@ -50,7 +50,8 @@ object HrDatabaseHelper {
                     maximum_hr INTEGER NOT NULL DEFAULT 0,
                     reading_count INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    import_fingerprint TEXT
                 )
                 """.trimIndent()
             )
@@ -67,8 +68,29 @@ object HrDatabaseHelper {
                 )
                 """.trimIndent()
             )
+            db.execSQL(
+                """
+                CREATE TABLE speed_events (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    speed_canonical REAL NOT NULL,
+                    entered_value REAL NOT NULL,
+                    entered_unit TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
             db.execSQL("CREATE INDEX idx_readings_session_id ON readings(session_id)")
             db.execSQL("CREATE INDEX idx_sessions_started_at ON sessions(started_at)")
+            db.execSQL("CREATE INDEX idx_speed_events_session_id ON speed_events(session_id)")
+            // UNIQUE enforces de-duplication at the storage layer itself (a
+            // backstop against two concurrent imports of the same file both
+            // passing the check-then-insert lookup before either inserts) -
+            // SQLite treats NULL as distinct from any other NULL for
+            // uniqueness purposes, so every non-imported session (which never
+            // sets this column) is unaffected.
+            db.execSQL("CREATE UNIQUE INDEX idx_sessions_import_fingerprint ON sessions(import_fingerprint)")
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -78,6 +100,28 @@ object HrDatabaseHelper {
             if (oldVersion < 2) {
                 db.execSQL("ALTER TABLE sessions ADD COLUMN effective_ended_at TEXT")
                 db.execSQL("UPDATE sessions SET effective_ended_at = ended_at WHERE effective_ended_at IS NULL")
+            }
+
+            // v2 -> v3: treadmill speed events (own table, zero rows for
+            // existing sessions) and an import-fingerprint column for CSV
+            // import de-duplication. Additive only.
+            if (oldVersion < 3) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS speed_events (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        recorded_at TEXT NOT NULL,
+                        speed_canonical REAL NOT NULL,
+                        entered_value REAL NOT NULL,
+                        entered_unit TEXT NOT NULL,
+                        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_speed_events_session_id ON speed_events(session_id)")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN import_fingerprint TEXT")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_import_fingerprint ON sessions(import_fingerprint)")
             }
         }
     }
@@ -92,6 +136,9 @@ object HrDatabaseHelper {
             put("session_type", if (session.isNull("sessionType")) null else session.optString("sessionType"))
             put("status", session.optString("status", "recording"))
             put("created_at", session.optString("startedAt"))
+            if (session.has("importFingerprint") && !session.isNull("importFingerprint")) {
+                put("import_fingerprint", session.getString("importFingerprint"))
+            }
         }
         db().insertOrThrow("sessions", null, values)
     }
@@ -211,6 +258,62 @@ object HrDatabaseHelper {
         }
     }
 
+    fun findSessionByImportFingerprint(fingerprint: String): JSONObject? {
+        db().query("sessions", null, "import_fingerprint = ?", arrayOf(fingerprint), null, null, null, "1").use { cursor ->
+            return if (cursor.moveToFirst()) sessionFromCursor(cursor) else null
+        }
+    }
+
+    // --- Speed events ----------------------------------------------------------
+
+    fun addSpeedEvent(event: JSONObject) {
+        val values = ContentValues().apply {
+            put("id", event.getString("id"))
+            put("session_id", event.getString("sessionId"))
+            put("recorded_at", event.getString("recordedAt"))
+            put("speed_canonical", event.getDouble("speedCanonical"))
+            put("entered_value", event.getDouble("enteredValue"))
+            put("entered_unit", event.getString("enteredUnit"))
+        }
+        db().insertOrThrow("speed_events", null, values)
+    }
+
+    fun getSpeedEventsForSession(sessionId: String): JSONArray {
+        val result = JSONArray()
+        db().query(
+            "speed_events", null, "session_id = ?", arrayOf(sessionId), null, null, "recorded_at ASC"
+        ).use { cursor ->
+            while (cursor.moveToNext()) result.put(speedEventFromCursor(cursor))
+        }
+        return result
+    }
+
+    fun updateSpeedEvent(eventId: String, updates: JSONObject) {
+        val values = ContentValues()
+        if (updates.has("recordedAt")) values.put("recorded_at", updates.getString("recordedAt"))
+        if (updates.has("speedCanonical")) values.put("speed_canonical", updates.getDouble("speedCanonical"))
+        if (updates.has("enteredValue")) values.put("entered_value", updates.getDouble("enteredValue"))
+        if (updates.has("enteredUnit")) values.put("entered_unit", updates.getString("enteredUnit"))
+        if (values.size() == 0) return
+        db().update("speed_events", values, "id = ?", arrayOf(eventId))
+    }
+
+    fun deleteSpeedEvent(eventId: String) {
+        db().delete("speed_events", "id = ?", arrayOf(eventId))
+    }
+
+    private fun speedEventFromCursor(cursor: Cursor): JSONObject {
+        fun col(name: String) = cursor.getColumnIndexOrThrow(name)
+        val event = JSONObject()
+        event.put("id", cursor.getString(col("id")))
+        event.put("sessionId", cursor.getString(col("session_id")))
+        event.put("recordedAt", cursor.getString(col("recorded_at")))
+        event.put("speedCanonical", cursor.getDouble(col("speed_canonical")))
+        event.put("enteredValue", cursor.getDouble(col("entered_value")))
+        event.put("enteredUnit", cursor.getString(col("entered_unit")))
+        return event
+    }
+
     private fun sessionFromCursor(cursor: Cursor): JSONObject {
         fun col(name: String) = cursor.getColumnIndexOrThrow(name)
         val session = JSONObject()
@@ -227,6 +330,11 @@ object HrDatabaseHelper {
         session.put("maximumHeartRate", cursor.getInt(col("maximum_hr")))
         session.put("readingCount", cursor.getInt(col("reading_count")))
         session.put("status", cursor.getString(col("status")))
+        val fingerprintIndex = col("import_fingerprint")
+        session.put(
+            "importFingerprint",
+            if (cursor.isNull(fingerprintIndex)) JSONObject.NULL else cursor.getString(fingerprintIndex)
+        )
         return session
     }
 

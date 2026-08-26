@@ -3,22 +3,38 @@
  * session/reading shapes (see services/session/sessionModel.js) so the same
  * code exports a session that just finished or one reloaded from History.
  */
+import { createSpeedResolver } from '../services/session/speedEventModel';
+import { fromCanonicalKmh } from '../services/session/speedUnits';
 
 const pad = (n) => String(n).padStart(2, '0');
 
 /**
- * Build CSV content from a session's readings
+ * Build CSV content from a session's readings. Backwards compatible: the
+ * original four columns keep their exact names/order, and
+ * treadmill_speed/treadmill_speed_unit are appended at the end so older
+ * exports (and anything that already parses the first four columns by
+ * position) are unaffected.
+ *
  * @param {Array<{timestamp: string, elapsedMs: number, heartRate: number}>} readings
  * @param {string|null} sessionType - 'strength', 'cardio', or null
+ * @param {object} [options]
+ * @param {Array<{recordedAt: string, speedCanonical: number}>} [options.speedEvents]
+ * @param {'kmh'|'mph'} [options.speedUnit] - unit to render treadmill_speed in (defaults to 'kmh')
  * @returns {string} CSV content with header row
  */
-export function buildCSV(readings, sessionType) {
-  const header = 'timestamp,elapsed_seconds,heart_rate_bpm,session_type';
+export function buildCSV(readings, sessionType, { speedEvents, speedUnit = 'kmh' } = {}) {
+  const header = 'timestamp,elapsed_seconds,heart_rate_bpm,session_type,treadmill_speed,treadmill_speed_unit';
+  const resolveSpeed = createSpeedResolver(speedEvents || []);
 
   const rows = readings.map((reading) => {
     const elapsedSeconds = (reading.elapsedMs / 1000).toFixed(3);
     const bpm = Math.round(reading.heartRate);
-    return `${reading.timestamp},${elapsedSeconds},${bpm},${sessionType || ''}`;
+    const canonicalSpeed = resolveSpeed(reading.timestamp);
+    // No speed event has fired yet for this reading - leave both fields
+    // blank rather than inventing a value.
+    const speed = canonicalSpeed === null ? '' : fromCanonicalKmh(canonicalSpeed, speedUnit);
+    const unit = canonicalSpeed === null ? '' : speedUnit;
+    return `${reading.timestamp},${elapsedSeconds},${bpm},${sessionType || ''},${speed},${unit}`;
   });
 
   return [header, ...rows].join('\n');

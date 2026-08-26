@@ -2,14 +2,16 @@ import React, { useState } from 'react';
 import HRMonitor from './components/HRMonitor';
 import HistoryView from './components/HistoryView';
 import SessionDetailView from './components/SessionDetailView';
+import Dashboard from './components/Dashboard';
 import AndroidApp from './components/android/AndroidApp';
 import { isNativePlatform } from './services/platform';
 
 function WebApp() {
-  const [view, setView] = useState('monitor'); // 'monitor' | 'history' | 'detail'
+  const [view, setView] = useState('monitor'); // 'monitor' | 'history' | 'detail' | 'dashboard'
   const [selectedSessionId, setSelectedSessionId] = useState(null);
 
   const openHistory = () => setView('history');
+  const openDashboard = () => setView('dashboard');
   const openSession = (sessionId) => {
     setSelectedSessionId(sessionId);
     setView('detail');
@@ -19,9 +21,10 @@ function WebApp() {
 
   return (
     <>
-      {view === 'monitor' && <HRMonitor onOpenHistory={openHistory} />}
+      {view === 'monitor' && <HRMonitor onOpenHistory={openHistory} onOpenDashboard={openDashboard} />}
       {view === 'history' && <HistoryView onBack={backToMonitor} onOpenSession={openSession} />}
       {view === 'detail' && <SessionDetailView sessionId={selectedSessionId} onBack={backToHistory} />}
+      {view === 'dashboard' && <Dashboard onBack={backToMonitor} />}
     </>
   );
 }
