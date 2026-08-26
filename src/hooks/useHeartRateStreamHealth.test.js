@@ -105,6 +105,73 @@ describe('useHeartRateStreamHealth', () => {
     expect(onReconnectNeeded).toHaveBeenCalledTimes(1);
   });
 
+  it('is bounded across full-reconnect cycles: a successful reconnect that never yields real BPM still counts against the budget, reaching failed after MAX_RECOVERY_ATTEMPTS and never looping again', async () => {
+    const onReading = vi.fn();
+    let reconnectCount = 0;
+    // Simulate useAndroidConnection's real contract: onReconnectNeeded performs
+    // a radio-level reconnect that SUCCEEDS (a fresh connection object), then
+    // calls startMonitoring(..., { isAutomaticRecovery: true }) - exactly like
+    // wireUpConnection does - but the strap never actually produces a reading.
+    const onReconnectNeeded = vi.fn(() => {
+      reconnectCount += 1;
+      result.current.startMonitoring(connection(`conn-${reconnectCount}`), { isAutomaticRecovery: true });
+    });
+    const { result } = renderHook(() => useHeartRateStreamHealth({ onReading, onReconnectNeeded }));
+
+    // Manual/explicit initial connect - this alone should NOT count toward the budget.
+    act(() => result.current.startMonitoring(connection('conn-0')));
+
+    // Run far longer than a single resubscribe+reconnect cycle needs, so the
+    // full sequence (waiting-for-data -> recovering -> escalate -> reconnect
+    // "succeeds" via isAutomaticRecovery -> waiting-for-data -> ... ) repeats
+    // enough times to either loop forever (bug) or hit the bound (fix).
+    const oneFullCycle = WAITING_FOR_DATA_TIMEOUT_MS + RESUBSCRIBE_WAIT_MS + RECOVERY_BACKOFF_MS[RECOVERY_BACKOFF_MS.length - 1] + 1000;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(oneFullCycle * (MAX_RECOVERY_ATTEMPTS + 2));
+    });
+
+    // The budget must actually be bounded: no valid BPM was ever delivered,
+    // so exactly MAX_RECOVERY_ATTEMPTS automatic reconnects should have been
+    // attempted - not one per cycle forever, and not reset by each
+    // "successful" reconnect.
+    expect(onReconnectNeeded).toHaveBeenCalledTimes(MAX_RECOVERY_ATTEMPTS);
+    expect(result.current.streamState).toBe('failed');
+
+    // And once failed, no further automatic escalation happens even if a lot
+    // more time passes - the loop must actually stop, not just pause.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(oneFullCycle * 5);
+    });
+    expect(onReconnectNeeded).toHaveBeenCalledTimes(MAX_RECOVERY_ATTEMPTS);
+    expect(result.current.streamState).toBe('failed');
+  });
+
+  it('an explicit/manual startMonitoring call resets the budget and can recover from failed', async () => {
+    const onReading = vi.fn();
+    let reconnectCount = 0;
+    const onReconnectNeeded = vi.fn(() => {
+      reconnectCount += 1;
+      result.current.startMonitoring(connection(`conn-${reconnectCount}`), { isAutomaticRecovery: true });
+    });
+    const { result } = renderHook(() => useHeartRateStreamHealth({ onReading, onReconnectNeeded }));
+
+    act(() => result.current.startMonitoring(connection('conn-0')));
+    const oneFullCycle = WAITING_FOR_DATA_TIMEOUT_MS + RESUBSCRIBE_WAIT_MS + RECOVERY_BACKOFF_MS[RECOVERY_BACKOFF_MS.length - 1] + 1000;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(oneFullCycle * (MAX_RECOVERY_ATTEMPTS + 2));
+    });
+    expect(result.current.streamState).toBe('failed');
+
+    // A user pressing Connect/Reconnect again is an explicit, manual attempt
+    // (the default - isAutomaticRecovery is not set) and must be able to
+    // leave 'failed', with a full recovery budget again.
+    act(() => result.current.startMonitoring(connection('manual-reconnect')));
+    expect(result.current.streamState).toBe('waiting-for-data');
+
+    act(() => result.current.handleReading({ heartRate: 70 }));
+    expect(result.current.streamState).toBe('streaming');
+  });
+
   it('never runs two recoveries concurrently (recoveryInProgressRef guard)', async () => {
     const onReading = vi.fn();
     const { result } = renderHook(() => useHeartRateStreamHealth({ onReading }));

@@ -44,6 +44,23 @@ function seedV1Database() {
         elapsedMs: 3600000,
         heartRate: 160
       });
+      // A second pre-existing session, also with no importFingerprint at
+      // all - both records having the identical "missing" key is exactly
+      // the case the v3 unique index on importFingerprint must tolerate
+      // (see the migration hazard test below).
+      tx.objectStore('sessions').add({
+        id: 'legacy-session-2',
+        startedAt: '2025-01-02T10:00:00.000Z',
+        endedAt: '2025-01-02T10:30:00.000Z',
+        durationMs: 1800000,
+        deviceName: 'Old Device',
+        sessionType: 'strength',
+        averageHeartRate: 100,
+        minimumHeartRate: 80,
+        maximumHeartRate: 140,
+        readingCount: 0,
+        status: 'completed'
+      });
       tx.oncomplete = () => {
         db.close();
         resolve();
@@ -55,15 +72,19 @@ function seedV1Database() {
 }
 
 describe('IndexedDB migration regression: v1 data survives the jump straight to v3', () => {
-  beforeEach(async () => {
+  // Only one test in this file actually opens the database: webStorage.js
+  // caches its connection at module scope, and a second dynamic import()
+  // within the same file resolves to that same cached module rather than
+  // re-running openDB() - a second beforeEach delete + reimport would race
+  // against (and hang behind) the first test's still-open connection, since
+  // nothing here has a way to close it. Keep this to a single test and
+  // assert everything - including the migration hazard check - within it.
+  it('retains all sessions/readings, backfills effectiveEndedAt, and the v3 UNIQUE importFingerprint index tolerates multiple pre-existing sessions with no fingerprint', async () => {
     await new Promise((resolve, reject) => {
       const req = indexedDB.deleteDatabase(DB_NAME);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
-  });
-
-  it('retains all sessions/readings and backfills effectiveEndedAt, with zero speed events and no reset', async () => {
     await seedV1Database();
 
     // Import fresh so the module's own openDB() call (at the current
@@ -90,7 +111,51 @@ describe('IndexedDB migration regression: v1 data survives the jump straight to 
     const speedEvents = await webStorage.getSpeedEventsForSession('legacy-session-1');
     expect(speedEvents).toEqual([]);
 
+    // Migration hazard: both legacy sessions have no importFingerprint
+    // property at all. If the v3 migration's UNIQUE index treated "missing"
+    // as a colliding value, upgrading this database would throw a
+    // ConstraintError right here and the user would lose access to their
+    // whole database - it must not, since either session simply never
+    // reached the "onupgradeneeded already threw" branch to get here.
     const allSessions = await webStorage.listSessions();
-    expect(allSessions).toHaveLength(1);
+    expect(allSessions).toHaveLength(2);
+    expect(allSessions.every((s) => s.importFingerprint === undefined)).toBe(true);
+
+    // And the unique constraint must still be live for genuinely new
+    // fingerprints going forward - a real duplicate is still rejected while
+    // a fresh one is accepted, right after upgrading from this legacy data.
+    await webStorage.createSession({
+      id: 'new-session-1',
+      startedAt: '2025-01-03T10:00:00.000Z',
+      endedAt: '2025-01-03T10:10:00.000Z',
+      effectiveEndedAt: '2025-01-03T10:10:00.000Z',
+      durationMs: 600000,
+      deviceName: 'Imported',
+      sessionType: 'cardio',
+      averageHeartRate: 100,
+      minimumHeartRate: 90,
+      maximumHeartRate: 110,
+      readingCount: 1,
+      status: 'completed',
+      importFingerprint: 'fingerprint-abc'
+    });
+
+    await expect(
+      webStorage.createSession({
+        id: 'new-session-2',
+        startedAt: '2025-01-03T11:00:00.000Z',
+        endedAt: '2025-01-03T11:10:00.000Z',
+        effectiveEndedAt: '2025-01-03T11:10:00.000Z',
+        durationMs: 600000,
+        deviceName: 'Imported',
+        sessionType: 'cardio',
+        averageHeartRate: 100,
+        minimumHeartRate: 90,
+        maximumHeartRate: 110,
+        readingCount: 1,
+        status: 'completed',
+        importFingerprint: 'fingerprint-abc'
+      })
+    ).rejects.toThrow();
   });
 });

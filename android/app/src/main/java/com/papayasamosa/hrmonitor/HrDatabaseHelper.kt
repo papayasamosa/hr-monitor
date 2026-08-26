@@ -84,7 +84,13 @@ object HrDatabaseHelper {
             db.execSQL("CREATE INDEX idx_readings_session_id ON readings(session_id)")
             db.execSQL("CREATE INDEX idx_sessions_started_at ON sessions(started_at)")
             db.execSQL("CREATE INDEX idx_speed_events_session_id ON speed_events(session_id)")
-            db.execSQL("CREATE INDEX idx_sessions_import_fingerprint ON sessions(import_fingerprint)")
+            // UNIQUE enforces de-duplication at the storage layer itself (a
+            // backstop against two concurrent imports of the same file both
+            // passing the check-then-insert lookup before either inserts) -
+            // SQLite treats NULL as distinct from any other NULL for
+            // uniqueness purposes, so every non-imported session (which never
+            // sets this column) is unaffected.
+            db.execSQL("CREATE UNIQUE INDEX idx_sessions_import_fingerprint ON sessions(import_fingerprint)")
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -115,7 +121,7 @@ object HrDatabaseHelper {
                 )
                 db.execSQL("CREATE INDEX IF NOT EXISTS idx_speed_events_session_id ON speed_events(session_id)")
                 db.execSQL("ALTER TABLE sessions ADD COLUMN import_fingerprint TEXT")
-                db.execSQL("CREATE INDEX IF NOT EXISTS idx_sessions_import_fingerprint ON sessions(import_fingerprint)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_import_fingerprint ON sessions(import_fingerprint)")
             }
         }
     }

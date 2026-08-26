@@ -55,7 +55,16 @@ function openDB() {
         }
         const sessionsStore = request.transaction.objectStore(SESSIONS_STORE);
         if (!sessionsStore.indexNames.contains('importFingerprint')) {
-          sessionsStore.createIndex('importFingerprint', 'importFingerprint');
+          // unique: true enforces de-duplication at the storage layer itself,
+          // not just via the check-then-insert lookup in csvImport.js (which
+          // is still the primary UX path - this is a backstop against two
+          // concurrent imports of the same file both passing that check
+          // before either has inserted). Records with no importFingerprint
+          // at all - every existing/non-imported session - are simply
+          // excluded from a unique index per the IndexedDB spec, so this is
+          // safe for the additive migration: it can never conflict with
+          // pre-existing data.
+          sessionsStore.createIndex('importFingerprint', 'importFingerprint', { unique: true });
         }
       }
     };

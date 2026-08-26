@@ -68,8 +68,11 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
       const result = await bluetooth.autoReconnect();
       if (result.connected) {
         const connection = { deviceId: result.deviceId, deviceName: result.deviceName || deviceNameRef.current };
+        // isAutomaticRecovery: true - a radio-level reconnect succeeding here
+        // does NOT by itself mean the stream is healthy again, so it must not
+        // reset the bounded recovery budget (see useHeartRateStreamHealth).
         // eslint-disable-next-line no-use-before-define
-        await wireUpConnection(connection, connection.deviceName);
+        await wireUpConnection(connection, connection.deviceName, { isAutomaticRecovery: true });
       } else {
         setConnectionState('not_connected');
       }
@@ -84,14 +87,14 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
 
   const stream = useHeartRateStreamHealth({ onReading, onReconnectNeeded: handleReconnectNeeded });
 
-  const wireUpConnection = useCallback(async (connection, name) => {
+  const wireUpConnection = useCallback(async (connection, name, { isAutomaticRecovery = false } = {}) => {
     connectionRef.current = connection;
     deviceNameRef.current = name;
     debugRecorder.setConnectedDevice(name);
 
     const activeConnection = await bluetooth.startNotifications(connection, stream.handleReading);
     connectionRef.current = activeConnection;
-    stream.startMonitoring(activeConnection);
+    stream.startMonitoring(activeConnection, { isAutomaticRecovery });
 
     unsubscribeDisconnectRef.current = bluetooth.onUnexpectedDisconnect(
       activeConnection,

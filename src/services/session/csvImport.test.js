@@ -176,6 +176,82 @@ describe('importSession', () => {
     expect(await storage.getSession(capturedSessionId)).toBeNull();
   });
 
+  it('same HR/timestamps with different treadmill speeds is NOT considered a duplicate', async () => {
+    const withSpeed = (speedValue) =>
+      [
+        'timestamp,elapsed_seconds,heart_rate_bpm,session_type,treadmill_speed,treadmill_speed_unit',
+        `2026-08-27T09:00:00.000Z,0.000,88,cardio,${speedValue},kmh`,
+        '2026-08-27T09:00:10.000Z,10.000,90,cardio,,'
+      ].join('\n');
+
+    const first = await importSession(await parseHeartRateCsv(withSpeed('5'), 'speed-a.csv'));
+    expect(first.duplicate).toBe(false);
+
+    // Identical timestamps/HR, but the treadmill was at a different speed -
+    // this must NOT be treated as the same recording.
+    const second = await importSession(await parseHeartRateCsv(withSpeed('6'), 'speed-b.csv'));
+    expect(second.duplicate).toBe(false);
+    expect(second.sessionId).not.toBe(first.sessionId);
+
+    // And re-importing the first file's exact content again IS still a duplicate.
+    const firstAgain = await importSession(await parseHeartRateCsv(withSpeed('5'), 'speed-a-renamed.csv'));
+    expect(firstAgain.duplicate).toBe(true);
+    expect(firstAgain.sessionId).toBe(first.sessionId);
+  });
+
+  it('a file without a session type imported once as Cardio and once as Strength is NOT collapsed into the same session', async () => {
+    const NO_TYPE_CSV = [
+      'timestamp,elapsed_seconds,heart_rate_bpm,session_type,treadmill_speed,treadmill_speed_unit',
+      '2026-08-28T09:00:00.000Z,0.000,82,,,',
+      '2026-08-28T09:00:10.000Z,10.000,84,,,'
+    ].join('\n');
+
+    const asCardio = await importSession(await parseHeartRateCsv(NO_TYPE_CSV, 'no-type-a.csv'), { sessionType: 'cardio' });
+    expect(asCardio.duplicate).toBe(false);
+
+    const asStrength = await importSession(await parseHeartRateCsv(NO_TYPE_CSV, 'no-type-b.csv'), { sessionType: 'strength' });
+    expect(asStrength.duplicate).toBe(false);
+    expect(asStrength.sessionId).not.toBe(asCardio.sessionId);
+
+    const sessionA = await storage.getSession(asCardio.sessionId);
+    const sessionB = await storage.getSession(asStrength.sessionId);
+    expect(sessionA.sessionType).toBe('cardio');
+    expect(sessionB.sessionType).toBe('strength');
+  });
+
+  it('enforces fingerprint uniqueness at the storage layer, gracefully recovering as a duplicate if the pre-check race is lost', async () => {
+    const RACE_CSV = [
+      'timestamp,elapsed_seconds,heart_rate_bpm,session_type,treadmill_speed,treadmill_speed_unit',
+      '2026-08-29T09:00:00.000Z,0.000,77,cardio,,',
+      '2026-08-29T09:00:10.000Z,10.000,79,cardio,,'
+    ].join('\n');
+
+    // Establish the session a concurrent import would have already won the race to create.
+    const real = await importSession(await parseHeartRateCsv(RACE_CSV, 'race-real.csv'));
+    expect(real.duplicate).toBe(false);
+
+    // Simulate a second import racing against it: this import's OWN
+    // findSessionByImportFingerprint pre-check "misses" (as it would for a
+    // genuinely concurrent import that started before the winner committed),
+    // then storage.createSession fails exactly as a real unique-index
+    // violation would.
+    const findSpy = vi.spyOn(storage, 'findSessionByImportFingerprint').mockImplementationOnce(async () => null);
+    const createSpy = vi.spyOn(storage, 'createSession').mockImplementationOnce(async () => {
+      throw new Error('UNIQUE constraint failed: sessions.import_fingerprint');
+    });
+
+    const raced = await importSession(await parseHeartRateCsv(RACE_CSV, 'race-loser.csv'));
+
+    findSpy.mockRestore();
+    createSpy.mockRestore();
+
+    // The post-failure recheck (using the real, unmocked lookup) must find
+    // the genuine winner and report a duplicate rather than surfacing the
+    // raw constraint error.
+    expect(raced.duplicate).toBe(true);
+    expect(raced.sessionId).toBe(real.sessionId);
+  });
+
   it('round-trips: importing a freshly exported CSV into a clean DB reproduces the same stats', async () => {
     // Build an in-memory "original" session's readings/speed events directly,
     // export them with buildCSV, then import that CSV and compare.

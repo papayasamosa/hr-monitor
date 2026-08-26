@@ -151,13 +151,46 @@ export function validateImportedSession(parsed) {
   };
 }
 
-/** Deterministic fingerprint of the imported content (not the filename), so
- * importing the same recording twice - even renamed - is detected. */
-async function computeFingerprint(sortedValidRows) {
-  const normalized = sortedValidRows
-    .map((r) => `${new Date(r.timestamp).toISOString()}|${Math.round(r.heartRate)}`)
-    .join('\n');
-  const data = new TextEncoder().encode(normalized);
+/**
+ * Reduce the per-reading forward-filled speed column down to its change
+ * points (canonical km/h), in chronological order. Shared by the fingerprint
+ * (so two files that differ only in treadmill speed never collide) and the
+ * actual speed-event reconstruction during import, so the two can never
+ * silently drift apart into different definitions of "a speed change".
+ */
+function computeSpeedChangePoints(sortedValidRows) {
+  const points = [];
+  let lastCanonical = null;
+  for (const row of sortedValidRows) {
+    if (row.speedValue === null || !row.speedUnit) continue;
+    const canonical = toCanonicalKmh(row.speedValue, row.speedUnit);
+    if (lastCanonical === null || canonical !== lastCanonical) {
+      points.push({ timestamp: row.timestamp, canonical, enteredValue: row.speedValue, enteredUnit: row.speedUnit });
+      lastCanonical = canonical;
+    }
+  }
+  return points;
+}
+
+/**
+ * Deterministic fingerprint of the semantically imported session - not just
+ * its filename, and not just its raw HR readings. Two files must fingerprint
+ * identically only when they'd produce the same session in every way that
+ * matters: same readings, same resolved session type, and the same
+ * treadmill-speed history (in canonical units, so 5 km/h and ~3.1 mph of the
+ * same physical speed still match). Session type and speed are included
+ * specifically so a file re-imported under a different session type, or an
+ * otherwise-identical file with different treadmill speeds, are never
+ * incorrectly collapsed into "the same recording".
+ */
+async function computeFingerprint(sortedValidRows, sessionType) {
+  const speedChangePoints = computeSpeedChangePoints(sortedValidRows);
+  const parts = [
+    `type:${sessionType || ''}`,
+    `speed:${speedChangePoints.map((p) => `${new Date(p.timestamp).toISOString()}@${p.canonical}`).join(',')}`,
+    ...sortedValidRows.map((r) => `${new Date(r.timestamp).toISOString()}|${Math.round(r.heartRate)}`)
+  ];
+  const data = new TextEncoder().encode(parts.join('\n'));
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -185,7 +218,7 @@ export async function importSession(parsed, overrides = {}) {
   const sessionType = overrides.sessionType || (fileSessionTypes.size === 1 ? [...fileSessionTypes][0] : null);
   if (!sessionType) throw new Error('sessionType is required to import this file (could not be recovered from it)');
 
-  const fingerprint = await computeFingerprint(validRows);
+  const fingerprint = await computeFingerprint(validRows, sessionType);
   const existing = await storage.findSessionByImportFingerprint(fingerprint);
   if (existing) {
     return { duplicate: true, sessionId: existing.id };
@@ -231,24 +264,18 @@ export async function importSession(parsed, overrides = {}) {
       max = Math.max(max, row.heartRate);
     }
 
-    // Reconstruct speed EVENTS (change points) from the per-reading
-    // forward-filled speed column - one new event only where the
-    // canonical speed actually changes, never one per reading.
-    let lastCanonical = null;
-    for (const row of validRows) {
-      if (row.speedValue === null || !row.speedUnit) continue;
-      const canonical = toCanonicalKmh(row.speedValue, row.speedUnit);
-      if (lastCanonical === null || canonical !== lastCanonical) {
-        await storage.addSpeedEvent(
-          createSpeedEventRecord({
-            sessionId,
-            recordedAt: row.timestamp,
-            enteredValue: row.speedValue,
-            enteredUnit: row.speedUnit
-          })
-        );
-        lastCanonical = canonical;
-      }
+    // Reconstruct speed EVENTS from the same change points used to build
+    // the fingerprint above - one new event only where the canonical speed
+    // actually changes, never one per reading.
+    for (const point of computeSpeedChangePoints(validRows)) {
+      await storage.addSpeedEvent(
+        createSpeedEventRecord({
+          sessionId,
+          recordedAt: point.timestamp,
+          enteredValue: point.enteredValue,
+          enteredUnit: point.enteredUnit
+        })
+      );
     }
 
     const effectiveEndedAt = overrides.effectiveEndedAt || endAt;
@@ -266,6 +293,17 @@ export async function importSession(parsed, overrides = {}) {
     return { duplicate: false, sessionId, readingCount: count };
   } catch (err) {
     await storage.deleteSession(sessionId).catch(() => {});
+
+    // The storage layer enforces importFingerprint uniqueness itself (see
+    // the additive migration), as a backstop against the check-then-insert
+    // race above (two concurrent imports of the same file both passing the
+    // findSessionByImportFingerprint check before either has inserted). If
+    // that's what actually happened, surface it as the duplicate it is
+    // rather than a raw constraint-violation error.
+    const wonByConcurrentImport = await storage.findSessionByImportFingerprint(fingerprint).catch(() => null);
+    if (wonByConcurrentImport) {
+      return { duplicate: true, sessionId: wonByConcurrentImport.id };
+    }
     throw err;
   }
 }
