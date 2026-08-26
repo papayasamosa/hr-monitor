@@ -112,3 +112,162 @@ describe('webStorage effective-end-time trimming', () => {
     expect(await webStorage.getReadings(session.id)).toEqual([]);
   });
 });
+
+describe('webStorage speed events', () => {
+  async function makeSession(id) {
+    const session = {
+      id,
+      startedAt: new Date('2026-08-21T17:00:00.000Z').toISOString(),
+      endedAt: null,
+      effectiveEndedAt: null,
+      durationMs: null,
+      deviceName: 'Treadmill Strap',
+      sessionType: 'cardio',
+      averageHeartRate: 0,
+      minimumHeartRate: 0,
+      maximumHeartRate: 0,
+      readingCount: 0,
+      status: 'recording'
+    };
+    await webStorage.createSession(session);
+    return session;
+  }
+
+  it('a new session has zero speed events until one is added', async () => {
+    await makeSession('speed-session-empty');
+    expect(await webStorage.getSpeedEventsForSession('speed-session-empty')).toEqual([]);
+  });
+
+  it('a mid-recording speed change creates a NEW timestamped event, never overwriting the original', async () => {
+    await makeSession('speed-session-multi');
+
+    await webStorage.addSpeedEvent({
+      id: 'evt-1',
+      sessionId: 'speed-session-multi',
+      recordedAt: '2026-08-21T17:00:00.000Z',
+      speedCanonical: 5.0,
+      enteredValue: 5.0,
+      enteredUnit: 'kmh'
+    });
+    await webStorage.addSpeedEvent({
+      id: 'evt-2',
+      sessionId: 'speed-session-multi',
+      recordedAt: '2026-08-21T17:10:00.000Z',
+      speedCanonical: 5.5,
+      enteredValue: 5.5,
+      enteredUnit: 'kmh'
+    });
+    await webStorage.addSpeedEvent({
+      id: 'evt-3',
+      sessionId: 'speed-session-multi',
+      recordedAt: '2026-08-21T17:20:00.000Z',
+      speedCanonical: 6.0,
+      enteredValue: 6.0,
+      enteredUnit: 'kmh'
+    });
+
+    const events = await webStorage.getSpeedEventsForSession('speed-session-multi');
+    expect(events).toHaveLength(3);
+    expect(events.map((e) => e.speedCanonical)).toEqual([5.0, 5.5, 6.0]);
+    expect(events.map((e) => e.recordedAt)).toEqual([
+      '2026-08-21T17:00:00.000Z',
+      '2026-08-21T17:10:00.000Z',
+      '2026-08-21T17:20:00.000Z'
+    ]);
+  });
+
+  it('updateSpeedEvent edits a single event without disturbing the others', async () => {
+    await makeSession('speed-session-update');
+    await webStorage.addSpeedEvent({
+      id: 'evt-a',
+      sessionId: 'speed-session-update',
+      recordedAt: '2026-08-21T17:00:00.000Z',
+      speedCanonical: 5.0,
+      enteredValue: 5.0,
+      enteredUnit: 'kmh'
+    });
+    await webStorage.addSpeedEvent({
+      id: 'evt-b',
+      sessionId: 'speed-session-update',
+      recordedAt: '2026-08-21T17:10:00.000Z',
+      speedCanonical: 5.5,
+      enteredValue: 5.5,
+      enteredUnit: 'kmh'
+    });
+
+    await webStorage.updateSpeedEvent('evt-a', { speedCanonical: 4.5, enteredValue: 4.5 });
+
+    const events = await webStorage.getSpeedEventsForSession('speed-session-update');
+    expect(events.find((e) => e.id === 'evt-a').speedCanonical).toBe(4.5);
+    expect(events.find((e) => e.id === 'evt-b').speedCanonical).toBe(5.5);
+  });
+
+  it('deleteSpeedEvent removes only the targeted event', async () => {
+    await makeSession('speed-session-delete');
+    await webStorage.addSpeedEvent({
+      id: 'evt-x',
+      sessionId: 'speed-session-delete',
+      recordedAt: '2026-08-21T17:00:00.000Z',
+      speedCanonical: 5.0,
+      enteredValue: 5.0,
+      enteredUnit: 'kmh'
+    });
+    await webStorage.addSpeedEvent({
+      id: 'evt-y',
+      sessionId: 'speed-session-delete',
+      recordedAt: '2026-08-21T17:10:00.000Z',
+      speedCanonical: 5.5,
+      enteredValue: 5.5,
+      enteredUnit: 'kmh'
+    });
+
+    await webStorage.deleteSpeedEvent('evt-x');
+
+    const events = await webStorage.getSpeedEventsForSession('speed-session-delete');
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toBe('evt-y');
+  });
+
+  it('deleting a session also removes its speed events', async () => {
+    await makeSession('speed-session-cascade');
+    await webStorage.addSpeedEvent({
+      id: 'evt-cascade',
+      sessionId: 'speed-session-cascade',
+      recordedAt: '2026-08-21T17:00:00.000Z',
+      speedCanonical: 5.0,
+      enteredValue: 5.0,
+      enteredUnit: 'kmh'
+    });
+
+    await webStorage.deleteSession('speed-session-cascade');
+
+    expect(await webStorage.getSpeedEventsForSession('speed-session-cascade')).toEqual([]);
+  });
+
+  it('findSessionByImportFingerprint returns null when no session has that fingerprint', async () => {
+    expect(await webStorage.findSessionByImportFingerprint('nonexistent-fingerprint')).toBeNull();
+  });
+
+  it('findSessionByImportFingerprint finds a session created with a fingerprint', async () => {
+    const session = {
+      id: 'fingerprint-session',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      effectiveEndedAt: null,
+      durationMs: null,
+      deviceName: 'Imported',
+      sessionType: 'cardio',
+      averageHeartRate: 0,
+      minimumHeartRate: 0,
+      maximumHeartRate: 0,
+      readingCount: 0,
+      status: 'completed',
+      importFingerprint: 'abc123fingerprint'
+    };
+    await webStorage.createSession(session);
+
+    const found = await webStorage.findSessionByImportFingerprint('abc123fingerprint');
+    expect(found).not.toBeNull();
+    expect(found.id).toBe('fingerprint-session');
+  });
+});

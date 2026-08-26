@@ -6,9 +6,10 @@
 import { recalculateForEffectiveEnd } from '../session/sessionModel';
 
 const DB_NAME = 'hr-monitor';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const SESSIONS_STORE = 'sessions';
 const READINGS_STORE = 'readings';
+const SPEED_EVENTS_STORE = 'speedEvents';
 
 let dbPromise = null;
 
@@ -41,6 +42,21 @@ function openDB() {
           }
           cursor.continue();
         };
+      }
+
+      // v2 -> v3: add the speedEvents store (treadmill speed tracking) and an
+      // importFingerprint index on sessions (CSV import de-duplication).
+      // Purely additive - existing sessions get zero speed events and a null
+      // fingerprint, no rewrite needed since IndexedDB records are schemaless.
+      if (event.oldVersion < 3) {
+        if (!db.objectStoreNames.contains(SPEED_EVENTS_STORE)) {
+          const speedEvents = db.createObjectStore(SPEED_EVENTS_STORE, { keyPath: 'id' });
+          speedEvents.createIndex('sessionId', 'sessionId');
+        }
+        const sessionsStore = request.transaction.objectStore(SESSIONS_STORE);
+        if (!sessionsStore.indexNames.contains('importFingerprint')) {
+          sessionsStore.createIndex('importFingerprint', 'importFingerprint');
+        }
       }
     };
 
@@ -146,18 +162,22 @@ export async function getReadings(sessionId) {
 export async function deleteSession(sessionId) {
   const db = await getDB();
   await new Promise((resolve, reject) => {
-    const tx = db.transaction([SESSIONS_STORE, READINGS_STORE], 'readwrite');
+    const tx = db.transaction([SESSIONS_STORE, READINGS_STORE, SPEED_EVENTS_STORE], 'readwrite');
     tx.objectStore(SESSIONS_STORE).delete(sessionId);
 
-    const index = tx.objectStore(READINGS_STORE).index('sessionId');
-    const cursorReq = index.openCursor(IDBKeyRange.only(sessionId));
-    cursorReq.onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        cursor.delete();
-        cursor.continue();
-      }
+    const deleteAllForSession = (storeName) => {
+      const index = tx.objectStore(storeName).index('sessionId');
+      const cursorReq = index.openCursor(IDBKeyRange.only(sessionId));
+      cursorReq.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
     };
+    deleteAllForSession(READINGS_STORE);
+    deleteAllForSession(SPEED_EVENTS_STORE);
 
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
@@ -167,4 +187,75 @@ export async function deleteSession(sessionId) {
 export async function findActiveSession() {
   const sessions = await listSessions();
   return sessions.find((s) => s.status === 'recording') || null;
+}
+
+export async function findSessionByImportFingerprint(fingerprint) {
+  if (!fingerprint) return null;
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SESSIONS_STORE, 'readonly');
+    const index = tx.objectStore(SESSIONS_STORE).index('importFingerprint');
+    const req = index.get(IDBKeyRange.only(fingerprint));
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// --- Speed events -----------------------------------------------------------
+
+export async function getSpeedEventsForSession(sessionId) {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SPEED_EVENTS_STORE, 'readonly');
+    const index = tx.objectStore(SPEED_EVENTS_STORE).index('sessionId');
+    const req = index.getAll(IDBKeyRange.only(sessionId));
+    req.onsuccess = () => {
+      const events = req.result.sort(
+        (a, b) => new Date(a.recordedAt).getTime() - new Date(b.recordedAt).getTime()
+      );
+      resolve(events);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function addSpeedEvent(event) {
+  const db = await getDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(SPEED_EVENTS_STORE, 'readwrite');
+    tx.objectStore(SPEED_EVENTS_STORE).add(event);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  return event;
+}
+
+export async function updateSpeedEvent(eventId, updates) {
+  const db = await getDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(SPEED_EVENTS_STORE, 'readwrite');
+    const store = tx.objectStore(SPEED_EVENTS_STORE);
+    const getReq = store.get(eventId);
+    getReq.onsuccess = () => {
+      const existing = getReq.result;
+      if (!existing) {
+        reject(new Error(`Speed event not found: ${eventId}`));
+        return;
+      }
+      store.put({ ...existing, ...updates });
+    };
+    getReq.onerror = () => reject(getReq.error);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteSpeedEvent(eventId) {
+  const db = await getDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(SPEED_EVENTS_STORE, 'readwrite');
+    tx.objectStore(SPEED_EVENTS_STORE).delete(eventId);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
 }

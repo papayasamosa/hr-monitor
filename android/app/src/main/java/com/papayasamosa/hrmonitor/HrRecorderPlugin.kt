@@ -332,6 +332,66 @@ class HrRecorderPlugin : Plugin() {
         call.resolve(result)
     }
 
+    @PluginMethod
+    fun findSessionByImportFingerprint(call: PluginCall) {
+        val fingerprint = call.getString("fingerprint")
+        if (fingerprint == null) {
+            call.reject("fingerprint is required")
+            return
+        }
+        val result = JSObject()
+        result.put("session", HrDatabaseHelper.findSessionByImportFingerprint(fingerprint)?.toString())
+        call.resolve(result)
+    }
+
+    // --- Speed events ----------------------------------------------------------
+
+    @PluginMethod
+    fun getSpeedEventsForSession(call: PluginCall) {
+        val sessionId = call.getString("sessionId")
+        if (sessionId == null) {
+            call.reject("sessionId is required")
+            return
+        }
+        val result = JSObject()
+        result.put("speedEvents", HrDatabaseHelper.getSpeedEventsForSession(sessionId).toString())
+        call.resolve(result)
+    }
+
+    @PluginMethod
+    fun addSpeedEvent(call: PluginCall) {
+        val eventJson = call.getString("event")
+        if (eventJson == null) {
+            call.reject("event is required")
+            return
+        }
+        HrDatabaseHelper.addSpeedEvent(JSONObject(eventJson))
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun updateSpeedEvent(call: PluginCall) {
+        val eventId = call.getString("eventId")
+        val updatesJson = call.getString("updates")
+        if (eventId == null || updatesJson == null) {
+            call.reject("eventId and updates are required")
+            return
+        }
+        HrDatabaseHelper.updateSpeedEvent(eventId, JSONObject(updatesJson))
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun deleteSpeedEvent(call: PluginCall) {
+        val eventId = call.getString("eventId")
+        if (eventId == null) {
+            call.reject("eventId is required")
+            return
+        }
+        HrDatabaseHelper.deleteSpeedEvent(eventId)
+        call.resolve()
+    }
+
     /** Called once at app startup - see webSessionRecorder.js's equivalent for why. */
     @PluginMethod
     fun recoverInterruptedSessions(call: PluginCall) {

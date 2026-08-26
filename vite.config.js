@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => ({
   base: mode === 'capacitor' ? './' : '/hr-monitor/',
   test: {
     environment: 'node',
-    include: ['src/**/*.test.js'],
+    include: ['src/**/*.test.js', 'src/**/*.test.jsx'],
+    setupFiles: ['./vitest.setup.js'],
   },
 }));

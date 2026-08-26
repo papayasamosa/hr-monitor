@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import storage from '../services/storage';
 import { exportSessionCSV } from '../services/session/exportSession';
+import CsvImportDialog from './CsvImportDialog';
 
 function formatDuration(ms) {
   if (!ms) return '0 min';
@@ -24,6 +25,7 @@ function HistoryView({ onBack, onOpenSession }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState(null);
+  const [showImport, setShowImport] = useState(false);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -74,6 +76,10 @@ function HistoryView({ onBack, onOpenSession }) {
       </header>
 
       <main className="main-content">
+        <button className="btn-secondary history-import-btn" onClick={() => setShowImport(true)}>
+          Import CSV
+        </button>
+
         {error && <div className="error-message">{error}</div>}
         {loading && <p className="info-message">Loading history...</p>}
         {!loading && sessions.length === 0 && (
@@ -112,6 +118,13 @@ function HistoryView({ onBack, onOpenSession }) {
           ))}
         </ul>
       </main>
+
+      {showImport && (
+        <CsvImportDialog
+          onCancel={() => setShowImport(false)}
+          onImported={() => loadSessions()}
+        />
+      )}
     </div>
   );
 }

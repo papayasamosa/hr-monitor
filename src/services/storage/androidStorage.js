@@ -46,3 +46,28 @@ export async function findActiveSession() {
 export async function updateEffectiveEndTime(sessionId, effectiveEndedAt) {
   await HrRecorder.updateEffectiveEndTime({ sessionId, effectiveEndedAt });
 }
+
+export async function findSessionByImportFingerprint(fingerprint) {
+  const { session } = await HrRecorder.findSessionByImportFingerprint({ fingerprint });
+  return session ? JSON.parse(session) : null;
+}
+
+// --- Speed events -----------------------------------------------------------
+
+export async function getSpeedEventsForSession(sessionId) {
+  const { speedEvents } = await HrRecorder.getSpeedEventsForSession({ sessionId });
+  return JSON.parse(speedEvents);
+}
+
+export async function addSpeedEvent(event) {
+  await HrRecorder.addSpeedEvent({ event: JSON.stringify(event) });
+  return event;
+}
+
+export async function updateSpeedEvent(eventId, updates) {
+  await HrRecorder.updateSpeedEvent({ eventId, updates: JSON.stringify(updates) });
+}
+
+export async function deleteSpeedEvent(eventId) {
+  await HrRecorder.deleteSpeedEvent({ eventId });
+}

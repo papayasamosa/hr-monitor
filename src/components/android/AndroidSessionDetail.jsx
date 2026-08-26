@@ -1,10 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import storage from '../../services/storage';
 import { exportSessionCSV } from '../../services/session/exportSession';
 import { filterReadingsByEffectiveEnd } from '../../services/session/sessionModel';
+import { calculateHeartRateStats } from '../../services/session/heartRateStats';
 import { setEffectiveEndTime, restoreEffectiveEndTime } from '../../services/session/trimSession';
+import { fromCanonicalKmh } from '../../services/session/speedUnits';
+import { getPreferredSpeedUnit } from '../../services/session/speedUnitPreference';
 import HeartRateChart from '../HeartRateChart';
 import EditEndTimeDialog from '../EditEndTimeDialog';
+import SpeedEventsEditor from '../SpeedEventsEditor';
 
 function formatDateTime(iso) {
   return iso ? new Date(iso).toLocaleString() : '—';
@@ -26,6 +30,8 @@ function capitalize(s) {
 function AndroidSessionDetail({ sessionId, onBack }) {
   const [session, setSession] = useState(null);
   const [readings, setReadings] = useState([]);
+  const [speedEvents, setSpeedEvents] = useState([]);
+  const [showSpeed, setShowSpeed] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -35,9 +41,14 @@ function AndroidSessionDetail({ sessionId, onBack }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, r] = await Promise.all([storage.getSession(sessionId), storage.getReadings(sessionId)]);
+      const [s, r, sp] = await Promise.all([
+        storage.getSession(sessionId),
+        storage.getReadings(sessionId),
+        storage.getSpeedEventsForSession(sessionId)
+      ]);
       setSession(s);
       setReadings(r);
+      setSpeedEvents(sp);
     } catch (err) {
       setError('Failed to load session: ' + err.message);
     } finally {
@@ -85,6 +96,17 @@ function AndroidSessionDetail({ sessionId, onBack }) {
 
   const isTrimmed = session && session.effectiveEndedAt && session.effectiveEndedAt !== session.endedAt;
   const includedReadings = session ? filterReadingsByEffectiveEnd(readings, session) : readings;
+  const stats = calculateHeartRateStats(includedReadings);
+  const speedUnit = getPreferredSpeedUnit();
+
+  const chartSpeedEvents = useMemo(() => {
+    if (!session || speedEvents.length === 0) return [];
+    const startMs = new Date(session.startedAt).getTime();
+    return speedEvents.map((event) => ({
+      elapsedMs: new Date(event.recordedAt).getTime() - startMs,
+      speed: fromCanonicalKmh(event.speedCanonical, speedUnit)
+    }));
+  }, [session, speedEvents, speedUnit]);
 
   return (
     <div className="android-home">
@@ -118,16 +140,24 @@ function AndroidSessionDetail({ sessionId, onBack }) {
 
             <div className="android-stats-row android-stats-row-detail">
               <div className="android-stat">
-                <span className="android-stat-value">{session.averageHeartRate}</span>
+                <span className="android-stat-value">{stats ? stats.min : '—'}</span>
+                <span className="android-stat-label">Lowest</span>
+              </div>
+              <div className="android-stat">
+                <span className="android-stat-value">{stats ? Math.round(stats.p025) : '—'}</span>
+                <span className="android-stat-label">Typical low</span>
+              </div>
+              <div className="android-stat">
+                <span className="android-stat-value">{stats ? Math.round(stats.average) : '—'}</span>
                 <span className="android-stat-label">Average</span>
               </div>
               <div className="android-stat">
-                <span className="android-stat-value">{session.minimumHeartRate}</span>
-                <span className="android-stat-label">Min</span>
+                <span className="android-stat-value">{stats ? Math.round(stats.p975) : '—'}</span>
+                <span className="android-stat-label">Typical high</span>
               </div>
               <div className="android-stat">
-                <span className="android-stat-value">{session.maximumHeartRate}</span>
-                <span className="android-stat-label">Max</span>
+                <span className="android-stat-value">{stats ? stats.max : '—'}</span>
+                <span className="android-stat-label">Highest</span>
               </div>
               <div className="android-stat">
                 <span className="android-stat-value">{session.readingCount}</span>
@@ -135,7 +165,31 @@ function AndroidSessionDetail({ sessionId, onBack }) {
               </div>
             </div>
 
-            <HeartRateChart readings={includedReadings} />
+            {chartSpeedEvents.length > 0 && (
+              <label className="speed-toggle">
+                <input type="checkbox" checked={showSpeed} onChange={(e) => setShowSpeed(e.target.checked)} />
+                Show treadmill speed on chart
+              </label>
+            )}
+
+            <HeartRateChart
+              readings={includedReadings}
+              averageBpm={stats?.average}
+              typicalLowBpm={stats?.p025}
+              typicalHighBpm={stats?.p975}
+              speedEvents={chartSpeedEvents}
+              speedUnit={speedUnit}
+              showSpeed={showSpeed}
+            />
+
+            {session.sessionType === 'cardio' && (
+              <SpeedEventsEditor
+                sessionId={sessionId}
+                session={session}
+                speedEvents={speedEvents}
+                onChange={load}
+              />
+            )}
 
             <div className="device-info-extended">
               <div className="device-info-row">

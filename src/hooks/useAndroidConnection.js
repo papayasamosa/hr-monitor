@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import bluetooth from '../services/bluetooth';
 import debugRecorder from '../utils/debugBluetooth';
+import { useHeartRateStreamHealth } from './useHeartRateStreamHealth';
+import { useAppForegroundResume } from './useAppForegroundResume';
 
 /**
  * Owns Android's connection lifecycle: attempts a silent reconnect to the
@@ -11,6 +13,16 @@ import debugRecorder from '../utils/debugBluetooth';
  * `onDisconnected` lets the caller abort/finalize an active recording.
  *
  * connectionState: 'no_device' | 'not_connected' | 'connecting' | 'connected'
+ *   (BLE-link state - whether the radio link is up)
+ * streamState: 'disconnected' | 'waiting-for-data' | 'streaming' | 'recovering' | 'failed'
+ *   (HR-notification health - whether BPM data is actually arriving; see
+ *   useHeartRateStreamHealth. A device can be 'connected' while its stream
+ *   sits in 'waiting-for-data'/'recovering' - that's exactly the "connected
+ *   but -- BPM" bug this distinction exists to catch and recover from.)
+ *
+ * Recovery (resubscribe, then bounded reconnect-with-backoff) never touches
+ * an in-progress recording: it only ever re-subscribes the same `onReading`
+ * callback, it never calls startRecording again.
  */
 export function useAndroidConnection({ onReading, onDisconnected }) {
   const [connectionState, setConnectionState] = useState('no_device');
@@ -19,8 +31,11 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
   const [error, setError] = useState('');
   const connectionRef = useRef(null);
   const unsubscribeDisconnectRef = useRef(null);
+  const deviceNameRef = useRef('');
+  const fullReconnectInProgressRef = useRef(false);
 
   const handleUnexpectedDisconnect = useCallback(() => {
+    stream.stopMonitoring();
     connectionRef.current = null;
     setConnectionState('not_connected');
     setBatteryLevel(null);
@@ -28,12 +43,55 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * The stream watchdog has given up on resubscribing and asked for a full
+   * reconnect. Tear down the stale link and reconnect to the same
+   * (remembered) device, then resubscribe on the fresh connection - all
+   * without touching connectionState in a way that would suggest to the
+   * recording hook that it should stop (an active recording just keeps
+   * accumulating whatever the reading callback delivers, gap and all).
+   */
+  const handleReconnectNeeded = useCallback(async () => {
+    if (fullReconnectInProgressRef.current) return;
+    fullReconnectInProgressRef.current = true;
+    try {
+      const staleConnection = connectionRef.current;
+      if (staleConnection) {
+        try {
+          await bluetooth.disconnect(staleConnection);
+        } catch {
+          // Best-effort - the link may already be down.
+        }
+      }
+      connectionRef.current = null;
+
+      const result = await bluetooth.autoReconnect();
+      if (result.connected) {
+        const connection = { deviceId: result.deviceId, deviceName: result.deviceName || deviceNameRef.current };
+        // eslint-disable-next-line no-use-before-define
+        await wireUpConnection(connection, connection.deviceName);
+      } else {
+        setConnectionState('not_connected');
+      }
+    } catch (err) {
+      console.error('Recovery reconnect failed:', err);
+      setConnectionState('not_connected');
+    } finally {
+      fullReconnectInProgressRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stream = useHeartRateStreamHealth({ onReading, onReconnectNeeded: handleReconnectNeeded });
+
   const wireUpConnection = useCallback(async (connection, name) => {
     connectionRef.current = connection;
+    deviceNameRef.current = name;
     debugRecorder.setConnectedDevice(name);
 
-    const activeConnection = await bluetooth.startNotifications(connection, onReading);
+    const activeConnection = await bluetooth.startNotifications(connection, stream.handleReading);
     connectionRef.current = activeConnection;
+    stream.startMonitoring(activeConnection);
 
     unsubscribeDisconnectRef.current = bluetooth.onUnexpectedDisconnect(
       activeConnection,
@@ -48,7 +106,7 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
       if (battery !== null) setBatteryLevel(battery);
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onReading, handleUnexpectedDisconnect]);
+  }, [stream.handleReading, stream.startMonitoring, handleUnexpectedDisconnect]);
 
   const attemptReconnect = useCallback(async () => {
     const remembered = await bluetooth.getRememberedDevice();
@@ -93,6 +151,14 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
     return () => clearInterval(interval);
   }, [connectionState]);
 
+  // On app foreground-resume, check the stream (not just the link) is
+  // actually still healthy. A healthy, recently-updated stream is left
+  // completely alone - we must never reconnect a stream that's fine just
+  // because the app happened to resume.
+  useAppForegroundResume(() => {
+    if (connectionState === 'connected') stream.checkHealthOnResume();
+  });
+
   /** Scan for and connect to a device (new or previously used) - remembers it for next launch. */
   const connectNewDevice = useCallback(async () => {
     setConnectionState('connecting');
@@ -109,6 +175,7 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
   }, [wireUpConnection]);
 
   const disconnect = useCallback(async () => {
+    stream.stopMonitoring();
     if (unsubscribeDisconnectRef.current) {
       unsubscribeDisconnectRef.current();
       unsubscribeDisconnectRef.current = null;
@@ -119,6 +186,7 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
       connectionRef.current = null;
     }
     setBatteryLevel(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const forgetDevice = useCallback(async () => {
@@ -134,6 +202,8 @@ export function useAndroidConnection({ onReading, onDisconnected }) {
     batteryLevel,
     error,
     isConnected: connectionState === 'connected',
+    streamState: stream.streamState,
+    lastHeartRateReceivedAt: stream.lastHeartRateReceivedAt,
     reconnect: attemptReconnect,
     connectNewDevice,
     disconnect,

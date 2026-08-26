@@ -2,6 +2,8 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import sessionRecorder from '../services/session';
 import debugRecorder from '../utils/debugBluetooth';
 import { analyzeHRV } from '../utils/hrvCalculations';
+import { recordSpeedChange } from '../services/session/speedEvents';
+import { getPreferredSpeedUnit, setPreferredSpeedUnit } from '../services/session/speedUnitPreference';
 
 const EMPTY_RECORDING_STATS = { average: 0, min: 0, max: 0, count: 0 };
 const HRV_TEST_DURATION = 120000; // 2 minutes
@@ -30,6 +32,36 @@ export function useRecordingSession() {
   const isRecordingRef = useRef(false);
   const recordingStartTimeRef = useRef(null);
   const currentSessionIdRef = useRef(null);
+
+  // Treadmill speed - cardio-only, optional. `treadmillSpeedValue` is the
+  // pending/current value shown in the UI; it's only ever written to
+  // storage as a SessionSpeedEvent (at recording start, or on each
+  // mid-recording change) via recordSpeedChange, never overwriting a prior
+  // event - see services/session/speedEvents.js.
+  const [treadmillSpeedValue, setTreadmillSpeedValue] = useState(null);
+  const [treadmillSpeedUnit, setTreadmillSpeedUnitState] = useState(() => getPreferredSpeedUnit());
+
+  const setTreadmillSpeedUnit = useCallback((unit) => {
+    setTreadmillSpeedUnitState(unit);
+    setPreferredSpeedUnit(unit);
+  }, []);
+
+  const treadmillSpeedUnitRef = useRef(treadmillSpeedUnit);
+  treadmillSpeedUnitRef.current = treadmillSpeedUnit;
+
+  /** Called from the recording UI whenever the user sets/changes the treadmill
+   * speed. If a recording is already in progress, this immediately persists a
+   * new timestamped speed event; otherwise it just records the pending value
+   * to be used as the initial speed event when startRecording() is called. */
+  const setTreadmillSpeed = useCallback((value) => {
+    setTreadmillSpeedValue(value);
+    if (isRecordingRef.current && currentSessionIdRef.current && typeof value === 'number' && !Number.isNaN(value)) {
+      recordSpeedChange(currentSessionIdRef.current, {
+        enteredValue: value,
+        enteredUnit: treadmillSpeedUnitRef.current
+      }).catch((err) => console.error('Failed to record speed change:', err));
+    }
+  }, []);
 
   const [isHRVTesting, setIsHRVTesting] = useState(false);
   const [hrvTestStart, setHRVTestStart] = useState(null);
@@ -84,6 +116,7 @@ export function useRecordingSession() {
 
     const sessionId = currentSessionIdRef.current;
     currentSessionIdRef.current = null;
+    setTreadmillSpeedValue(null);
     if (!sessionId) return;
 
     try {
@@ -113,7 +146,17 @@ export function useRecordingSession() {
       setIsRecording(false);
       throw err;
     }
-  }, [sessionType]);
+
+    // A speed already set before the user pressed Start becomes the
+    // session's first speed event, timestamped at the actual recording start.
+    if (sessionType === 'cardio' && typeof treadmillSpeedValue === 'number' && !Number.isNaN(treadmillSpeedValue)) {
+      recordSpeedChange(currentSessionIdRef.current, {
+        enteredValue: treadmillSpeedValue,
+        enteredUnit: treadmillSpeedUnitRef.current,
+        recordedAt: recordingStartTimeRef.current.toISOString()
+      }).catch((err) => console.error('Failed to record initial speed:', err));
+    }
+  }, [sessionType, treadmillSpeedValue]);
 
   const stopRecording = useCallback(() => abortRecording('completed'), [abortRecording]);
 
@@ -186,6 +229,11 @@ export function useRecordingSession() {
     startRecording,
     stopRecording,
     abortRecording,
+
+    treadmillSpeedValue,
+    treadmillSpeedUnit,
+    setTreadmillSpeed,
+    setTreadmillSpeedUnit,
 
     isHRVTesting,
     hrvTestState,
